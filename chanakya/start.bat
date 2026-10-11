@@ -13,9 +13,10 @@ if not exist ".venv\Scripts\python.exe" (
 if not exist ".env" (
     copy ".env.example" ".env" >nul
     echo.
-    echo Created .env - open it, add your GROQ_API_KEY and DEEPGRAM_API_KEY, then run start.bat again.
-    notepad .env
-    exit /b 0
+    echo Created .env. Both API keys are optional: without them Chanakya teaches its
+    echo 42 built-in topics offline and speaks with your browser's own voice.
+    echo Add GROQ_API_KEY ^(AI tutor^) and/or DEEPGRAM_API_KEY ^(natural voice^) any time.
+    echo.
 )
 
 echo Starting Chanakya at http://localhost:8000  (Ctrl+C to stop)

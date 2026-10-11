@@ -2,11 +2,15 @@
 
 Chanakya is a small FastAPI server plus a no-build browser app. The server talks to the AI providers and stores memory; the browser does all rendering, audio playback and animation.
 
+Both providers are **optional**. A built-in lesson library (`lessons/`) covers every curriculum topic in the same event protocol, so a question produces a lesson even with no keys, no network to the providers, or an exhausted quota.
+
 ```
 ┌──────────────────────── Browser (static/) ────────────────────────┐        ┌──────── server.py ────────┐
 │                                                                    │        │                           │
 │  app.js ── POST /api/lesson ───────────────────────────────────────┼──────► │ build prompt (prompts.py  │
 │    │        ◄── NDJSON events, one per line, as they are generated ┼─────── │ + memory.py) → Groq       │
+│    │        ◄── or the built-in lesson, if the model cannot answer ┼─────── │ ↳ retry → other model →   │
+│    │                                                               │        │   lessons/ (offline)      │
 │    │                                                               │        │ stream → JsonObjectScanner│
 │    ├─ per step: POST /api/tts (prefetched) ◄── mp3 ────────────────┼─────── │ → clean_event → yield     │
 │    │                                                               │        │                           │
@@ -15,6 +19,7 @@ Chanakya is a small FastAPI server plus a no-build browser app. The server talks
 │    │     ├─ models3d.js  kit3d.js  labels3d.js                     │        │   ⇄ Deepgram Nova-3 live  │
 │    │                                                               │        │ /api/memory, /api/progress│
 │    └─ voice.js: LiveMic ── WS /api/listen (webm/opus chunks) ──────┼──────► │   → data/memory.json      │
+│         ↳ or the browser's SpeechRecognition, when there is no key ┼──────  │                           │
 └────────────────────────────────────────────────────────────────────┘        └───────────────────────────┘
 ```
 
@@ -29,7 +34,40 @@ Chanakya is a small FastAPI server plus a no-build browser app. The server talks
 5. **`_loads_lenient`** parses each object, repairing invalid escapes that models produce for LaTeX (`"\alpha"` becomes `"\\alpha"`) by scanning escape pairs left to right.
 6. **`clean_event`** validates and normalises each event: types, caps on list lengths, `mode` limited to `2d|3d`, and LaTeX repair. For example, `\t` from `\times` is restored, `\(...\)` becomes `$...$`, and stray `\times`/`\theta` in prose become `×`/`θ`.
 7. Side effects: the first `meta` of a lesson bumps the topic's "seen" count; `memory` events are saved as observations.
-8. The browser receives NDJSON: one JSON event per line, then `{"type":"done"}`. Provider errors arrive as `{"type":"error"}`.
+8. The browser receives NDJSON: one JSON event per line, then `{"type":"done"}`.
+
+### Server: never a dead end
+
+A provider problem is handled inside `lesson_stream`, so the browser never has to show a raw API error:
+
+| Situation | What happens |
+|---|---|
+| Transient error (timeout, 5xx, connection) | The same model is retried twice, after 0.7 s then 1.8 s |
+| Rate limit / quota (HTTP 429) | Switch to the other model at once - each model has its own quota bucket. Waiting for a reset (which can be 35 minutes) is never done |
+| No key, `AI_MODE=offline`, or every attempt failed | Stream the matching lesson from `lessons/` instead |
+| Steps already drawn, then the stream died | Keep the partial lesson; do not restart or duplicate it |
+| Question with no lesson in the library | A short reply that lists the topics the library does cover |
+
+Each of these emits a soft `{"type":"notice","tone":"warn"}` event - an amber note in the transcript -
+with a human message built by `_friendly_failure()`. Provider payloads, organisation ids and status
+codes are never forwarded. `{"type":"error"}` survives only for the case where nothing at all came back.
+
+### Offline lesson library (`lessons/`)
+
+Hand-authored lessons in exactly the model's vocabulary, so the whole playback pipeline is reused
+unchanged: `meta` → `step` (say + draw/draw3d + camera) → `check` → `suggest`.
+
+| Module | Contents |
+|---|---|
+| `lessons/maths.py`, `physics.py`, `chemistry.py` | 42 lessons, one per curriculum topic in `static/curriculum.js` |
+| `lessons/__init__.py` | Matching (`match`, `best_match`), depth slicing (`events_for`), event building |
+| `lessons/validate.py` | `python -m lessons.validate`: checks every lesson against what the renderers support |
+
+Matching is keyword based with light stemming, so spoken phrasings ("how do planes fly", "eigen values")
+find the right lesson; the validator asserts that every curriculum prompt and every starter chip maps to
+its own topic. Depth slices the same lesson: Basic takes the first 4 steps, Standard all of them,
+Deep dive adds the `deep`-only pages and a second quiz. Events go through the same `clean_event()`
+as model output, and are paced ~40 ms apart so speech is prefetched step by step, as with a stream.
 
 ### Browser: producer/consumer playback (`app.js` → `ask()`)
 
@@ -77,8 +115,18 @@ Chanakya is a small FastAPI server plus a no-build browser app. The server talks
 
 ## 4. Voice (`voice.js`, `server.py`)
 
-- **Text-to-speech**: `/api/tts` proxies Deepgram Aura and returns MP3. The audio's duration drives the drawing pace. Without a key (HTTP 503), the browser's `speechSynthesis` is used, with an estimated duration.
-- **Speech-to-text**: `LiveMic` records 250 ms webm/opus chunks and streams them over `WS /api/listen`. The server relays them to Deepgram's live endpoint (keeping the key server-side) and sends back interim and final transcripts plus `utterance_end` after about 1.5 s of silence, which sends the question.
+`/api/health` reports `voice` and `stt` as `deepgram` or `browser`; `voice.js` reads that once at start-up
+via `setVoiceMode()`, so no request is wasted on an engine that is not configured.
+
+- **Text-to-speech**: with a key, `/api/tts` proxies Deepgram Aura and returns MP3, whose duration drives
+  the drawing pace. Otherwise the browser's `speechSynthesis` is used, with an estimated duration - the
+  drawing pace is unchanged, so lessons still look the same.
+- **Speech-to-text**: with a key, `LiveMic` records 250 ms webm/opus chunks and streams them over
+  `WS /api/listen`; the server relays to Deepgram (keeping the key server-side) and returns interim and
+  final transcripts plus `utterance_end` after ~1.5 s of silence, which sends the question. Without a key
+  the server replies `{"type":"use_browser"}`, and `LiveMic` switches to the browser's `SpeechRecognition`
+  with the same interface - including a 1.5 s pause-to-send timer and the same input meter. The mic button
+  is therefore never disabled.
 
 ## 5. Memory (`memory.py`)
 

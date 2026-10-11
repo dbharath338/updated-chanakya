@@ -2,19 +2,19 @@
 import katex from 'katex'
 import {
   createIcons, Activity, ArrowRight, ArrowUp, Atom, BookOpen, Box, Brain, ChartSpline, ChevronDown, ChevronRight,
-  ChevronsUpDown, CircleCheck, CircleX, CornerDownRight, Eraser, FlaskConical, GitBranch, GraduationCap, Layers,
+  ChevronsUpDown, CircleCheck, CircleX, CornerDownRight, Eraser, FlaskConical, GitBranch, GraduationCap, Info, Layers,
   Lightbulb, Link2, List, Magnet, Mic, Moon, NotebookPen, Orbit, Presentation, Rotate3d, RotateCcw, Scan, Search,
   Sigma, Sparkles, Sprout, Square, Sun, Telescope, Trash2, TriangleAlert, TriangleRight, UserRound, Volume2,
   VolumeX, Wind, X, Zap,
 } from 'lucide'
 import { mountBoard } from './board.js'
 // scene3d.js (three.js + the model library) is imported on demand, the first time 3D is opened.
-import { synthesize, speak, stopSpeaking, LiveMic } from './voice.js'
+import { synthesize, speak, stopSpeaking, setVoiceMode, LiveMic } from './voice.js'
 import { CURRICULUM_TREE, TOPICS, SUBJECTS } from './curriculum.js'
 
 const ICONS = {
   Activity, ArrowRight, ArrowUp, Atom, BookOpen, Box, Brain, ChartSpline, ChevronDown, ChevronRight,
-  ChevronsUpDown, CircleCheck, CircleX, CornerDownRight, Eraser, FlaskConical, GitBranch, GraduationCap, Layers,
+  ChevronsUpDown, CircleCheck, CircleX, CornerDownRight, Eraser, FlaskConical, GitBranch, GraduationCap, Info, Layers,
   Lightbulb, Link2, List, Magnet, Mic, Moon, NotebookPen, Orbit, Presentation, Rotate3d, RotateCcw, Scan, Search,
   Sigma, Sparkles, Sprout, Square, Sun, Telescope, Trash2, TriangleAlert, TriangleRight, UserRound, Volume2,
   VolumeX, Wind, X, Zap,
@@ -159,6 +159,15 @@ function addError(text) {
   el.className = 'error'
   el.innerHTML = `${ic('triangle-alert')}<span>${escapeHtml(text)}</span>`
   return append(el, 'error')
+}
+
+// A heads-up that is not a failure (rate limit reached, AI switched off, offline
+// lesson playing instead). Amber, dismissible by the next lesson, never red.
+function addNotice(text, tone = 'warn') {
+  const el = document.createElement('div')
+  el.className = `notice${tone === 'info' ? ' info' : ''}`
+  el.innerHTML = `${ic('info')}<span>${escapeHtml(text)}</span>`
+  return append(el, 'notice')
 }
 
 // ---------- board overlays ----------
@@ -368,6 +377,7 @@ async function ask(question, preferredMode, isContinuation = false) {
   const queue = [] // [{ev, audio: Promise<url|null>}]
   const received = [] // events to remember in history
   let streamDone = false
+  let answered = false // anything at all came back, notice included
   let wake = null
   const notify = () => { wake?.(); wake = null }
 
@@ -395,7 +405,8 @@ async function ask(question, preferredMode, isContinuation = false) {
           if (!line) continue
           const ev = JSON.parse(line)
           if (ev.type === 'done') continue
-          if (ev.type !== 'error') received.push(ev)
+          if (ev.type !== 'error' && ev.type !== 'notice') received.push(ev)
+          if (ev.type !== 'error') answered = true
           queue.push({ ev, audio: ev.type === 'step' && voiceOn ? synthesize(speakable(ev.say), signal) : Promise.resolve(null) })
           notify()
         }
@@ -426,7 +437,7 @@ async function ask(question, preferredMode, isContinuation = false) {
   if (received.some((e) => e.type === 'step')) {
     history.push({ role: 'user', content: isContinuation ? lastQuestion : question })
     history.push({ role: 'assistant', content: received.map((e) => JSON.stringify(e)).join('\n') })
-  } else if (!signal.aborted && !received.length) {
+  } else if (!signal.aborted && !answered) {
     addError('No lesson came back. Try asking again.')
   }
   if (current === ctrl) {
@@ -484,6 +495,11 @@ async function play(ev, audio, signal) {
     case 'memory':
       addNote(ev.note)
       refreshMemory()
+      return
+
+    case 'notice':
+      setThinking('')
+      addNotice(ev.message, ev.tone)
       return
 
     case 'error':
@@ -1064,16 +1080,39 @@ $('#reset-memory').addEventListener('click', async () => {
 
 // ---------- startup ----------
 
+// Both APIs are optional. With no keys the app still teaches every curriculum
+// topic from its built-in lesson library and speaks with the browser's own voice,
+// so this is an informational banner rather than a warning that something is broken.
+const offlineCount = store.get('chanakya.offline-topics', 0)
 fetch('/api/health').then((r) => r.json()).then((h) => {
-  const missing = [!h.groq && 'GROQ_API_KEY', !h.deepgram && 'DEEPGRAM_API_KEY'].filter(Boolean)
-  if (!missing.length) return
+  setVoiceMode(h.voice)
+  // The Fast/Deep switch only means something while the model is in use; the depth
+  // switch still does, because it slices the offline lessons too.
+  const modelSwitch = $('#model-switch')
+  if (modelSwitch) {
+    modelSwitch.classList.toggle('inactive', !h.llm)
+    modelSwitch.title = h.llm ? 'Which language model answers'
+      : 'Model choice applies only when the AI tutor is enabled (add GROQ_API_KEY, or set AI_MODE=auto)'
+  }
+  if (h.offline?.lessons) store.set('chanakya.offline-topics', h.offline.lessons)
   const alert = $('#alert')
-  alert.innerHTML = `${ic('triangle-alert')}<div>Add ${missing.map((k) => `<code>${k}</code>`).join(' and ')} to <code>.env</code>, then restart the server.${
-    !h.deepgram ? ' Until then, the voice uses your browser and the mic is off.' : ''}</div>`
-  alert.classList.remove('hidden')
-  if (!h.deepgram) micBtn.disabled = true
+  if (h.llm) {
+    // The model is live: only mention Deepgram if the learner expects natural voice.
+    if (!h.deepgram) {
+      alert.innerHTML = `${ic('info')}<div>Using your browser's built-in voice. Add <code>DEEPGRAM_API_KEY</code> to <code>.env</code> for the natural voice - nothing else changes.</div>`
+      alert.classList.remove('hidden')
+    }
+  } else {
+    const why = h.ai_mode === 'offline'
+      ? 'The AI is switched off (<code>AI_MODE=offline</code>)'
+      : 'No <code>GROQ_API_KEY</code> in <code>.env</code>'
+    alert.innerHTML = `${ic('info')}<div>${why}, so lessons come from the built-in library of ${
+      h.offline?.lessons ?? offlineCount} topics and the voice is your browser's own. No API calls, no rate limits. ${
+      h.ai_mode === 'offline' ? 'Set <code>AI_MODE=auto</code> with a key to use the model again.' : 'Add a key to enable the AI tutor.'}</div>`
+    alert.classList.remove('hidden')
+  }
   renderIcons()
-})
+}).catch(() => {})
 refreshMemory()
 
 // Debug handle for the browser console, e.g. chanakya.play({type:'step', say:'hi', draw:[...]})
