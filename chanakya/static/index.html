@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chanakya</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" />
+  <link rel="stylesheet" href="https://unpkg.com/tldraw@3.15.6/tldraw.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <link rel="stylesheet" href="/static/style.css?v=3.0" />
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.3.1",
+        "react/": "https://esm.sh/react@18.3.1/",
+        "react-dom": "https://esm.sh/react-dom@18.3.1",
+        "react-dom/": "https://esm.sh/react-dom@18.3.1/",
+        "tldraw": "https://esm.sh/tldraw@3.15.6?external=react,react-dom",
+        "katex": "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.mjs",
+        "mathjs": "https://esm.sh/mathjs@13.2.0",
+        "lucide": "https://esm.sh/lucide@0.469.0",
+        "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+          <defs>
+            <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#3b3486" /><stop offset="1" stop-color="#6a4bc4" />
+            </linearGradient>
+          </defs>
+          <rect width="32" height="32" rx="9" fill="url(#lg)" />
+          <path d="M8 22.5c2.6-1.4 5.3-1.4 8 0 2.7-1.4 5.4-1.4 8 0V11c-2.6-1.4-5.3-1.4-8 0-2.7-1.4-5.4-1.4-8 0z" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" />
+          <path d="M16 11v11.5" stroke="#fff" stroke-width="1.8" />
+          <circle cx="23.5" cy="7.5" r="2.6" fill="#f2a541" />
+        </svg>
+        <span class="wordmark">Chanakya</span>
+        <span class="tag">AI Tutor</span>
+      </div>
+
+      <div class="top-actions">
+        <div class="segmented" id="depth-switch" role="radiogroup" aria-label="Depth">
+          <button type="button" role="radio" data-depth="basic" title="Basic: short and simple">
+            <i data-lucide="sprout"></i><span>Basic</span>
+          </button>
+          <button type="button" role="radio" data-depth="standard" title="Standard: intuition, idea, example">
+            <i data-lucide="book-open"></i><span>Standard</span>
+          </button>
+          <button type="button" role="radio" data-depth="deep" title="Deep dive: derivations, edge cases, applications">
+            <i data-lucide="layers"></i><span>Deep dive</span>
+          </button>
+        </div>
+        <div class="segmented" id="model-switch" role="radiogroup" aria-label="Model">
+          <button type="button" role="radio" data-model="openai/gpt-oss-20b" title="GPT-OSS 20B: quickest replies">
+            <i data-lucide="zap"></i><span>Fast</span>
+          </button>
+          <button type="button" role="radio" data-model="openai/gpt-oss-120b" title="GPT-OSS 120B: richer explanations">
+            <i data-lucide="brain"></i><span>Deep</span>
+          </button>
+        </div>
+        <div class="segmented segmented-mode" id="mode-switch" role="radiogroup" aria-label="Animation Mode">
+          <button type="button" role="radio" data-mode="2d" aria-checked="true" title="2D Whiteboard Animated Drawing">
+            <i data-lucide="presentation"></i><span>2D Board</span>
+          </button>
+          <button type="button" role="radio" data-mode="3d" aria-checked="false" title="3D Spatial Holographic Scene">
+            <i data-lucide="box"></i><span>3D Space</span>
+          </button>
+        </div>
+        <button type="button" class="icon-btn pulse-glow" id="top-open-index" title="Subject Curriculum Index">
+          <i data-lucide="book-open"></i>
+        </button>
+        <button type="button" class="icon-btn" id="voice-toggle" aria-pressed="true" title="Mute tutor voice">
+          <i data-lucide="volume-2"></i>
+        </button>
+        <button type="button" class="icon-btn" id="theme-toggle" title="Toggle dark/light mode" aria-label="Toggle theme">
+          <i data-lucide="moon" id="theme-icon"></i>
+        </button>
+        <button type="button" class="icon-btn" id="open-profile" title="Learner profile">
+          <i data-lucide="user-round"></i>
+        </button>
+      </div>
+    </header>
+
+    <main class="stage">
+      <section class="board-card">
+        <div id="board"></div>
+        <div id="scene3d" class="scene3d hidden"><div class="notes3d"></div></div>
+
+        <div class="board-tools" role="toolbar" aria-label="Board">
+          <button type="button" class="tool" id="view-toggle" title="Switch to the 3D view"><i data-lucide="box"></i><span>3D</span></button>
+          <button type="button" class="tool hidden" id="spin" aria-pressed="false" title="Auto-rotate"><i data-lucide="rotate-3d"></i></button>
+          <button type="button" class="tool" id="fit" title="Reset view"><i data-lucide="scan"></i></button>
+          <button type="button" class="tool" id="clear" title="Clear board"><i data-lucide="eraser"></i></button>
+          <button type="button" class="tool danger hidden" id="stop" title="Stop lesson">
+            <i data-lucide="square"></i><span>Stop</span>
+          </button>
+        </div>
+
+        <div id="thinking" class="pill hidden" role="status">
+          <span class="dots"><i></i><i></i><i></i></span><span id="thinking-text">Thinking</span>
+        </div>
+
+        <div id="caption" class="caption hidden" aria-live="polite"></div>
+
+        <!-- Cinematic Short Intro Animation Before Problem Visualization -->
+        <div id="visual-intro" class="visual-intro hidden" aria-hidden="true">
+          <div class="intro-backdrop"></div>
+          <div class="intro-card">
+            <div class="intro-sparkles">
+              <span class="ring-pulse"></span>
+              <span class="ring-orbit"></span>
+              <div class="intro-icon"><i data-lucide="sparkles"></i></div>
+            </div>
+            <div class="intro-badge" id="intro-badge">Initializing Visualization</div>
+            <h2 class="intro-title" id="intro-title">Exploring Concept</h2>
+            <p class="intro-desc" id="intro-desc">Preparing interactive canvas & spatial models…</p>
+            <div class="intro-progress"><div class="intro-bar"></div></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="chat">
+        <div id="alert" class="alert hidden" role="alert"></div>
+
+        <div id="transcript" class="transcript">
+          <div id="empty" class="empty">
+            <div class="empty-icon"><i data-lucide="graduation-cap"></i></div>
+            <h2>What shall we learn today?</h2>
+            <p>Ask out loud or type. I'll explain on the whiteboard or in 3D, step by step, then check you've got it.</p>
+            <div class="chips">
+              <button type="button" class="chip" data-q="Explain why water H2O has a bent 3D shape and dipole moment in 3D"><i data-lucide="flask-conical"></i>Water molecule (3D)</button>
+              <button type="button" class="chip" data-q="Show a bar magnet with its 3D magnetic field lines and poles"><i data-lucide="magnet"></i>Magnetic field (3D)</button>
+              <button type="button" class="chip" data-q="Show the 3D Bohr model of a Lithium atom with electron shells"><i data-lucide="atom"></i>Bohr atom (3D)</button>
+              <button type="button" class="chip" data-q="Explain simple harmonic motion and the forces acting on a pendulum in 3D"><i data-lucide="activity"></i>Pendulum motion (3D)</button>
+              <button type="button" class="chip" data-q="Show how a 2D circle transforms into a 3D cylinder and explain its volume formula"><i data-lucide="sparkles"></i>2D to 3D Cylinder</button>
+              <button type="button" class="chip" data-q="Explain the Pythagorean theorem"><i data-lucide="triangle-right"></i>Pythagorean theorem</button>
+              <button type="button" class="chip" data-q="Show the 3D structure of a methane molecule and why it is tetrahedral"><i data-lucide="atom"></i>Methane molecule</button>
+              <button type="button" class="chip" data-q="Explain the cross product of two vectors in 3D"><i data-lucide="box"></i>Cross product in 3D</button>
+              <button type="button" class="chip" data-q="How do planets orbit the Sun? Explain Kepler's laws in 3D"><i data-lucide="orbit"></i>Planetary orbits</button>
+            </div>
+          </div>
+        </div>
+
+        <form id="ask-form" class="composer">
+          <div id="listening" class="listening hidden">
+            <div class="meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+            <span>Listening. Pause to send.</span>
+            <button type="button" id="mic-cancel" class="link-btn">Cancel</button>
+          </div>
+          <div class="composer-box">
+            <textarea id="question" rows="1" placeholder="Ask anything, or tap the mic…" aria-label="Your question"></textarea>
+            <button type="button" id="mic" class="mic-btn" aria-pressed="false" title="Talk to Chanakya">
+              <i data-lucide="mic"></i>
+            </button>
+            <button type="submit" id="send" class="send-btn" title="Send" disabled>
+              <i data-lucide="arrow-up"></i>
+            </button>
+          </div>
+          <p class="fineprint">Enter to send · Shift+Enter for a new line</p>
+        </form>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Floating Subject Curriculum Index Button (Right Edge) -->
+  <button type="button" id="open-index" class="floating-index-btn" title="Browse Curriculum Topics Index">
+    <i data-lucide="book-open"></i>
+    <span>Topics Index</span>
+    <span class="badge-count" id="floating-badge-count">43</span>
+  </button>
+
+  <!-- Dynamic Curriculum Topics Index Drawer -->
+  <div id="index-drawer" class="drawer index-drawer" aria-hidden="true">
+    <div class="drawer-backdrop" data-close-index></div>
+    <section class="drawer-panel index-panel" role="dialog" aria-labelledby="index-title">
+      <header class="index-header">
+        <div class="index-title-group">
+          <div class="index-badge"><i data-lucide="book-open"></i> Curriculum Index</div>
+          <h2 id="index-title">Browse Topics by Subject</h2>
+          <p class="index-subtitle">Alphabetically cataloged topics for Mathematics, Physics, and Chemistry</p>
+        </div>
+        <button type="button" class="icon-btn" data-close-index title="Close"><i data-lucide="x"></i></button>
+      </header>
+
+      <div class="index-search-bar">
+        <i data-lucide="search" class="search-icon"></i>
+        <input type="text" id="index-search" placeholder="Search laws, equations, concepts (e.g. Bohr, Snell, VSEPR)..." />
+        <button type="button" id="index-search-clear" class="ghost-btn hidden" title="Clear search"><i data-lucide="x"></i></button>
+      </div>
+
+      <div class="index-tabs" role="tablist">
+        <button type="button" class="index-tab active" data-subject="all">
+          <span>All Topics</span><span class="tab-badge" id="badge-all">0</span>
+        </button>
+        <button type="button" class="index-tab tab-maths" data-subject="maths">
+          <i data-lucide="sigma"></i><span>Maths</span><span class="tab-badge" id="badge-maths">0</span>
+        </button>
+        <button type="button" class="index-tab tab-physics" data-subject="physics">
+          <i data-lucide="zap"></i><span>Physics</span><span class="tab-badge" id="badge-physics">0</span>
+        </button>
+        <button type="button" class="index-tab tab-chemistry" data-subject="chemistry">
+          <i data-lucide="flask-conical"></i><span>Chemistry</span><span class="tab-badge" id="badge-chemistry">0</span>
+        </button>
+      </div>
+
+      <!-- Specialized Hierarchy View Controls -->
+      <div class="index-view-toolbar">
+        <div class="index-view-switch" role="radiogroup" aria-label="Index View Mode">
+          <button type="button" class="view-switch-btn active" data-curriculum-view="tree" title="View as Hierarchical Knowledge Tree">
+            <i data-lucide="git-branch"></i><span>Tree Hierarchy</span>
+          </button>
+          <button type="button" class="view-switch-btn" data-curriculum-view="alpha" title="View as A-Z Alphabetical Index">
+            <i data-lucide="list"></i><span>A–Z Index</span>
+          </button>
+        </div>
+
+        <div class="index-toolbar-actions">
+          <button type="button" id="index-expand-toggle" class="toolbar-btn" title="Expand or collapse all branches">
+            <i data-lucide="chevrons-up-down"></i><span id="expand-toggle-text">Collapse All</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="index-topic-list" class="index-topic-list">
+        <!-- Dynamically rendered in specialized Tree mode or Alphabetical mode -->
+      </div>
+    </section>
+  </div>
+
+  <div id="drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-backdrop" data-close></div>
+    <section class="drawer-panel" role="dialog" aria-labelledby="drawer-title">
+      <header>
+        <h2 id="drawer-title">Learner profile</h2>
+        <button type="button" class="icon-btn" data-close title="Close"><i data-lucide="x"></i></button>
+      </header>
+      <form id="profile-form" class="profile-form">
+        <label>Name<input name="name" placeholder="e.g. Aarav" /></label>
+        <label>Level<input name="level" placeholder="e.g. Class 10, JEE, B.Tech" /></label>
+        <label>Goal<input name="goal" placeholder="e.g. Crack JEE Mains" /></label>
+        <button type="submit" class="primary">Save profile</button>
+      </form>
+      <h3><i data-lucide="book-open"></i>Progress</h3>
+      <div id="topics" class="topics"></div>
+      <h3><i data-lucide="notebook-pen"></i>What I've noticed</h3>
+      <ul id="notes" class="notes"></ul>
+      <button type="button" id="reset-memory" class="ghost danger-text"><i data-lucide="trash-2"></i>Reset memory</button>
+    </section>
+  </div>
+
+  <script type="module" src="/static/app.js?v=3.0"></script>
+</body>
+</html>

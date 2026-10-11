@@ -1,0 +1,240 @@
+# Lesson protocol reference
+
+The tutor answers every question with **NDJSON**: one JSON object per line. This page lists everything it can emit. The same vocabulary is described to the model in `prompts.py`, and all of it can be tried by hand in the browser console (see [Testing by hand](#testing-by-hand)).
+
+## Contents
+
+- [Events](#events)
+- [2D whiteboard shapes](#2d-whiteboard-shapes)
+- [3D scene](#3d-scene): [coordinates](#coordinates), [common options](#common-options), [objects](#3d-objects), [organic shapes](#organic-shapes), [actions](#3d-actions), [camera](#camera)
+- [Model library](#model-library)
+- [Colours](#colours)
+- [Testing by hand](#testing-by-hand)
+
+---
+
+## Events
+
+Order: `meta` → `step`… (more `meta` events turn the page) → `check`… → `suggest` → optional `memory`.
+
+### `meta`: start a page
+
+```json
+{"type":"meta","topic":"Cross product","mode":"3d","clear":true}
+```
+
+| Field | Meaning |
+|---|---|
+| `topic` | Short topic name (shown as a divider; counted in learner memory) |
+| `mode` | `"2d"` (whiteboard) or `"3d"` (3D stage) |
+| `clear` | `true` for a fresh page, `false` to keep building on the current one |
+
+A lesson may emit several `meta` events to turn the page or switch between 2D and 3D.
+
+### `step`: say something while drawing
+
+```json
+{"type":"step","say":"Here are two vectors on the floor.","draw3d":[...],"camera":{"pos":[8,-7,4],"target":[1,1,1]}}
+```
+
+| Field | Meaning |
+|---|---|
+| `say` | 1-3 spoken sentences (≈45 words max), plain words with no notation |
+| `draw` | 2D shapes (0-6) drawn while `say` is spoken |
+| `draw3d` | 3D objects/actions (0-6, server cap 14) |
+| `camera` | Optional camera flight for this step (3D) |
+
+On a 3D page, any `text`/`math` items in `draw` are shown in the formula column instead.
+
+### `check`: quiz card
+
+```json
+{"type":"check","question":"If $\\vec a \\parallel \\vec b$, what is $\\vec a\\times\\vec b$?","options":["...","The zero vector","...","..."],"answer":1,"explain":"Parallel vectors span no area."}
+```
+
+`answer` is the 0-based index of the correct option. Inline maths uses `$...$`. Deep dive lessons emit two checks.
+
+### `suggest`: "Go deeper" chips
+
+```json
+{"type":"suggest","items":["How do you compute it from components?","Why is torque a cross product?"]}
+```
+
+### `memory`: something lasting about the learner
+
+```json
+{"type":"memory","note":"Confuses the dot and cross products."}
+```
+
+### Server-only events
+
+`{"type":"error","message":"..."}` and `{"type":"done"}`.
+
+---
+
+## 2D whiteboard shapes
+
+The board is **1000 × 640**, origin top-left, y down. Layout convention: title at (40, 30); diagram in x 40-520 / y 90-600; formulas in x 560-960, stacked from y 100 about 70 px apart.
+
+| Kind | Fields |
+|---|---|
+| `text` | `x, y, text, size (s/m/l/xl), color` |
+| `math` | `x, y, latex, size (m/l), color` (KaTeX) |
+| `rect` `ellipse` `triangle` `diamond` | `x, y, w, h, color, fill, label` |
+| `circle` | `cx, cy, r, color` |
+| `line` | `points: [[x,y],...], color, closed` |
+| `arrow` | `from: [x,y], to: [x,y], color, label` |
+| `plot` | `x, y, w, h, fn ("x^2 - 2*x"), xmin, xmax, (ymin, ymax), color, label` (draws its own axes; math.js syntax) |
+
+---
+
+## 3D scene
+
+### Coordinates
+
+Math convention: **x right, y into the screen, z up**. Keep content within about −4..4 (the floor grid spans −5..5 at z = 0). Default camera: position `[7,-9,6]` looking at `[0,0,0]`. Animals face +x (left side +y); plants and people stand along +z.
+
+### Common options
+
+Available on most objects:
+
+| Option | Meaning |
+|---|---|
+| `id` | Name for later actions (`move`, `rotate`, `highlight`, `remove`, `label` target) |
+| `label` / `latex` | A tag shown next to the object |
+| `color` | See [Colours](#colours) |
+| `opacity` | 0.05-1 |
+| `rotate` | `[rx, ry, rz]` degrees about the math x, y, z axes |
+| `finish` | `matte`, `glossy`, `organic`, `glass` or `metal` |
+
+### 3D objects
+
+| Kind | Fields | Notes |
+|---|---|---|
+| `axes` | `size`, `grid` | One set per page (redrawing replaces it) |
+| `point` | `at, r` | |
+| `vector` | `from, to, r` | Grows from its base |
+| `line` | `points, closed, r` | Straight segments drawn like a pen |
+| `curve` | `x, y, z` (in `t`), `tmin, tmax`, or `points` | Thin smooth curve |
+| `circle` / `ellipse` | `center, r` / `rx, ry` | Flat ring in the horizontal plane |
+| `surface` | `fn` (z = f(x,y)), `xmin…ymax`, `colormap` / or `x, y, z` in `u, v` with `umin…vmax` | Rises from the floor; `colormap` colours by height |
+| `sphere` | `center, r, wireframe` | |
+| `box` | `center, size: [sx,sy,sz]` | |
+| `cylinder` / `cone` | `from, to, r` | Bonds, rods, shafts |
+| `torus` | `center, r, tube` | Lies flat |
+| `plane` | `point, normal, size` | Translucent |
+| `polygon` | `points` | Flat filled face |
+| `field` | `fx, fy, fz, range, n, plane` | Vector field as arrows |
+| `label` | `at, text/latex` or `target: "id.part"` | `target` makes a callout with a leader line |
+| `note` | `latex` or `text`, `size` | Formula column, top-right (short formulas only) |
+| `model` | `name, id, center, size, labels, opacity` + model options | See [Model library](#model-library) |
+
+### Organic shapes
+
+For natural things with no ready-made model.
+
+| Kind | Fields | Good for |
+|---|---|---|
+| `body` | `spine: [[x,y,z],...]`, `width: [...]`, `height: [...]`, `color`, `belly` | Animal bodies, insects, worms, vegetables, boats. Full width/height at evenly spaced spine points; `belly` shades the underside |
+| `blob` | `balls: [[x,y,z,r],...]`, `segments: [[[x,y,z],[x,y,z],r1,r2],...]`, `smooth` (0-1), `wrinkle`, `squash`, `colors` | Organs, fruit, rocks, coral; overlapping spheres melted together |
+| `tube` | `points`, `r` (number or list to taper) | Vessels, stems, roots, limbs, intestines |
+| `lathe` | `base`, `profile: [[radius,height],...]`, `axis` | Vases, trunks, bulbs, mushrooms, bones |
+| `ellipsoid` | `center, radii: [rx,ry,rz]` | Organs, eggs, seeds |
+| `leaf` / `petal` / `fin` | `base, tip, width, curl, fold, normal` | Leaves, petals, fins, wings, ears (`normal` = direction the flat face points) |
+
+Example, a fish body with a tail fin:
+
+```json
+{"kind":"body","spine":[[1.6,0,1],[1.1,0,1.02],[0.3,0,1.05],[-0.6,0,1],[-1.4,0,0.98]],
+ "width":[0.05,0.5,0.62,0.4,0.12],"height":[0.05,0.8,1,0.6,0.2],"color":"#4f7fa3","belly":"#ece6d6"}
+{"kind":"fin","base":[-1.35,0,0.98],"tip":[-2.1,0,1.5],"width":0.45,"normal":[0,-1,0]}
+```
+
+### 3D actions
+
+`id` can be an object id or a model part (`"heart.aorta"`).
+
+| Kind | Fields | Effect |
+|---|---|---|
+| `move` | `id, to` or `path: [[x,y,z],...], closed, loops` | Slide to a point or follow waypoints |
+| `rotate` | `id, axis, angle` (degrees) | Rotate about the object's anchor (hinged parts rotate about their joint) |
+| `highlight` | `id, color` | Glow; on a named spot, a glowing marker |
+| `opacity` | `id, value` | Fade to see inside (`1` restores) |
+| `pulse` | `id, times, amount` | Rhythmic swell (heartbeat, breathing) |
+| `flap` | `id, times, angle` | Beat a model's hinged parts (wings, tail) |
+| `flow` | `path` (route name, waypoints, or part targets), `color, count, r, seconds, id` | Looping particles: blood, air, water, impulses |
+| `remove` | `id` | Fade out and delete (cut away a model part, or remove a label by id) |
+| `spin` | `on, speed` | Slowly orbit the camera |
+| `camera` | `pos, target` | Same as the step-level `camera` |
+
+### Camera
+
+`"camera": {"pos": [x,y,z], "target": [x,y,z]}` on a step flies the view over part of the sentence. Useful presets: front `[0,-10,2]`, top `[0.01,0,12]`. Without one, the view re-frames automatically when content is off-screen or too small.
+
+---
+
+## Model library
+
+```json
+{"kind":"model","name":"heart","id":"heart","center":[0,0,2],"size":4,"opacity":1,"labels":false}
+```
+
+- `size`: largest dimension. Without `center` the model stands on the floor.
+- `id` defaults to the model name; parts are addressed as `"<id>.<part>"`.
+- `labels`: `true` labels every part; an array labels the listed parts. The usual pattern is to label parts one by one with `{"kind":"label","target":"heart.aorta"}`.
+
+| Model | Options | Parts | Flow routes | Hinged |
+|---|---|---|---|---|
+| `heart` | | right-atrium, right-ventricle, left-atrium, left-ventricle, aorta, pulmonary-artery, pulmonary-veins, superior-vena-cava, inferior-vena-cava, tricuspid-valve*, pulmonary-valve*, mitral-valve*, aortic-valve*, septum*, apex* | body-to-lungs, lungs-to-body, blood | |
+| `human` | `organs`, `color` | head, torso, left-arm, right-arm, left-leg, right-leg; with organs: brain, lungs, heart, liver, stomach, intestines, kidneys, bladder, spine | digestion (organs) | |
+| `lungs` | | trachea, bronchi, bronchioles, alveoli, left-lung, right-lung, diaphragm | air | |
+| `brain` | `lobes` (default true) | left-hemisphere, right-hemisphere, frontal-lobe*, parietal-lobe*, temporal-lobe*, occipital-lobe*, cerebellum, brainstem | | |
+| `tree` | `type` (deciduous/pine), `roots` | trunk, branches, leaves (pine: needles), roots, soil | water | |
+| `flower` | `petals`, `color`, `roots` | petals, sepals, stamens, anther*, pistil, stigma*, style*, ovary*, receptacle, stem, leaf, roots | water, pollen, pollen-tube | |
+| `cell` | `type` (animal/plant) | cell-membrane, nucleus, nucleolus, endoplasmic-reticulum, ribosomes, golgi-apparatus, mitochondria; animal: lysosomes, centrosome; plant: cell-wall, vacuole, chloroplasts | | |
+| `dna` | `turns` | backbone, base-pairs, adenine*, thymine*, guanine*, cytosine*, hydrogen-bonds*, major-groove*, minor-groove* | | |
+| `neuron` | | cell-body, nucleus, dendrites, axon-hillock*, axon, myelin-sheath, node-of-ranvier*, axon-terminals | impulse | |
+| `eye` | `iris`, `cutaway` | cornea, iris, pupil*, lens, ciliary-body, sclera, choroid, retina, fovea*, optic-disc*, optic-nerve, vitreous-humour* | light-top, light-bottom | |
+| `fish` | `color`, `belly` | body, caudal-fin, dorsal-fin, pectoral-fin, pelvic-fin, anal-fin, eye, gill-cover, lateral-line, mouth* | water | tail, pectoral fin |
+| `bird` | `color`, `belly` | body, head*, beak, eyes, left-wing, right-wing, primary-feathers*, tail-feathers, legs, breast-muscles* | air-over-wing, air-under-wing | wings |
+| `insect` | `type` (butterfly/bee) | head, compound-eyes, antennae, thorax, abdomen, legs, left/right-forewing, left/right-hindwing, proboscis (butterfly) / stinger (bee) | | wings |
+
+\* A **named spot**: a point with no separate mesh. It can be labelled; `highlight` drops a glowing marker on it.
+
+A typical model sequence:
+
+```json
+{"kind":"model","name":"heart","size":4}
+{"kind":"label","target":"heart.right-atrium"}
+{"kind":"opacity","id":"heart","value":0.4}
+{"kind":"flow","path":"heart.body-to-lungs","color":"blue","count":14}
+{"kind":"pulse","id":"heart","times":3}
+```
+
+---
+
+## Colours
+
+Named: `black, grey, blue, light-blue, red, light-red, green, light-green, orange, yellow, violet, light-violet, white`, plus natural tones `skin, pink, dark-red, brown, dark-green, tan, cream, bone, flesh, gold`. In 3D, any hex colour (`"#8d3b2f"`) also works. Unknown names fall back to a default.
+
+---
+
+## Testing by hand
+
+Open the app, then the browser console:
+
+```js
+// 2D
+chanakya.play({type:'meta', mode:'2d', clear:true, topic:'Test'})
+chanakya.play({type:'step', say:'A sine wave.', draw:[{kind:'plot', x:60, y:120, w:400, h:300, fn:'sin(x)', xmin:-6, xmax:6}]})
+
+// 3D
+chanakya.play({type:'meta', mode:'3d', clear:true, topic:'Test'})
+chanakya.play({type:'step', say:'A saddle.', draw3d:[{kind:'axes'}, {kind:'surface', fn:'x^2-y^2', colormap:true}]})
+
+// Models
+chanakya.play({type:'step', say:'The heart.', draw3d:[{kind:'model', name:'heart', labels:true}]})
+chanakya.play({type:'step', say:'Blood flow.', draw3d:[{kind:'opacity', id:'heart', value:0.4}, {kind:'flow', path:'heart.blood'}]})
+```
+
+`chanakya.scene` (3D) and `chanakya.board` (2D) are also exposed for inspection.
