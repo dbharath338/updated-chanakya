@@ -292,7 +292,7 @@ function continueInView() {
   ask(said
     ? `We were on "${currentTopic || lastQuestion}". So far you have explained: ${said}\n`
       + `Continue from exactly there, on the ${surface}, without repeating what you already said.`
-    : `${lastQuestion}\nAnswer that on the ${surface}.`, view)
+    : `${lastQuestion}\nAnswer that on the ${surface}.`, view, true)
 }
 
 // ---------- settings: model + depth + voice ----------
@@ -346,10 +346,10 @@ function stop() {
   setLessonActive(false)
 }
 
-async function ask(question, preferredMode) {
+async function ask(question, preferredMode, isContinuation = false) {
   question = question.trim()
   if (!question) return
-  lastQuestion = question
+  if (!isContinuation) lastQuestion = question
   stop()
   // a fresh question lets the tutor choose the mode again; a continuation keeps the one we asked for
   userMode = preferredMode ? (preferredMode === '3d' ? '3d' : '2d') : null
@@ -357,10 +357,13 @@ async function ask(question, preferredMode) {
   current = ctrl
   const { signal } = ctrl
 
-  addUser(question)
-  triggerVisualIntro(question)
+  if (!isContinuation) {
+    addUser(question)
+    triggerVisualIntro(question)
+  }
   setThinking(depth === 'deep' ? 'Planning a deep dive' : model.includes('120b') ? 'Thinking it through' : 'Thinking')
   setLessonActive(true)
+  let keepCurrentPage = isContinuation && page.length > 0
 
   const queue = [] // [{ev, audio: Promise<url|null>}]
   const received = [] // events to remember in history
@@ -413,11 +416,15 @@ async function ask(question, preferredMode) {
       continue
     }
     const { ev, audio } = queue.shift()
+    if (ev.type === 'meta' && keepCurrentPage) {
+      keepCurrentPage = false
+      ev.clear = false
+    }
     await play(ev, audio, signal)
   }
 
   if (received.some((e) => e.type === 'step')) {
-    history.push({ role: 'user', content: question })
+    history.push({ role: 'user', content: isContinuation ? lastQuestion : question })
     history.push({ role: 'assistant', content: received.map((e) => JSON.stringify(e)).join('\n') })
   } else if (!signal.aborted && !received.length) {
     addError('No lesson came back. Try asking again.')
@@ -449,7 +456,7 @@ async function play(ev, audio, signal) {
       const { durationMs, done } = await speak(speakable(ev.say), url, { enabled: voiceOn, signal })
       showCaption(speakable(ev.say), durationMs)
       const draw3d = view === '3d' ? [...notesFrom(ev.draw), ...(ev.draw3d ?? [])] : ev.draw3d
-      const draw2d = view === '3d' ? (ev.draw ?? []).filter((d) => d.kind !== 'math' && d.kind !== 'text') : ev.draw
+      const draw2d = view === '3d' ? (ev.draw ?? []).filter((d) => d.kind !== 'math' && d.kind !== 'text') : [...(ev.draw ?? []), ...boardFrom3d(ev.draw3d)]
       await Promise.all([
         board.render(draw2d, durationMs, signal),
         scene?.render(draw3d, durationMs, signal, ev.camera),
@@ -928,12 +935,12 @@ function renderCurriculumIndex() {
 
   // Wire subtopic launch clicks for both views
   listEl.querySelectorAll('.subtopic-node-card, .index-topic-card').forEach((card) => {
-    card.addEventListener('click', () => {
+    card.addEventListener('click', async () => {
       const p = card.dataset.prompt
       const targetMode = card.dataset.mode
-      if (targetMode && targetMode !== view) setView(targetMode)
       closeIndex()
-      ask(p)
+      if (targetMode && targetMode !== view) await setView(targetMode)
+      ask(p, targetMode)
     })
   })
 

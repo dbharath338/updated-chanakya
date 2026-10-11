@@ -122,12 +122,12 @@ def _loads_lenient(text: str) -> dict | None:
 
 
 def _latex(s) -> str:
-    return str(s or "").translate(_LATEX_CONTROL)
+    return ("" if s is None else str(s)).translate(_LATEX_CONTROL)
 
 
 def _inline_latex(s) -> str:
     """Repair only the $...$ parts of mixed prose + math text (\\(...\\) and \\[...\\] become $ / $$)."""
-    s = re.sub(r"\\\[(.+?)\\\]", r"$$\1$$", str(s or ""), flags=re.S)
+    s = re.sub(r"\\\[(.+?)\\\]", r"$$\1$$", "" if s is None else str(s), flags=re.S)
     s = re.sub(r"\\\((.+?)\\\)", r"$\1$", s, flags=re.S)
     # odd pieces are inside $...$; even pieces are prose, where stray commands become symbols
     parts = re.split(r"(\$\$[\s\S]+?\$\$|\$[^$]*\$)", s)
@@ -169,6 +169,8 @@ def clean_event(ev: dict) -> dict | None:
         out = {"type": "step", "say": str(ev.get("say", ""))[:600]}
         for key, cap in (("draw", 10), ("draw3d", 14)):
             items = ev.get(key) or []
+            if isinstance(items, dict):
+                items = [items]
             items = [d for d in items if isinstance(d, dict) and isinstance(d.get("kind"), str)][:cap]
             for d in items:
                 if "latex" in d:
@@ -408,6 +410,16 @@ async def index():
     return FileResponse(ROOT / "static" / "index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(ROOT / "static" / "favicon.svg", media_type="image/svg+xml")
+
+
+@app.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
+async def chrome_devtools():
+    return JSONResponse({})
+
+
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 
@@ -428,4 +440,4 @@ async def http_error(_, exc: HTTPException):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("PORT", "8000")))
+    uvicorn.run(app, host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", "8000")))
