@@ -8,7 +8,7 @@ import {
   VolumeX, Wind, X, Zap,
 } from 'lucide'
 import { mountBoard } from './board.js'
-import { mountScene } from './scene3d.js'
+// scene3d.js (three.js + the model library) is imported on demand, the first time 3D is opened.
 import { synthesize, speak, stopSpeaking, LiveMic } from './voice.js'
 import { CURRICULUM_TREE, TOPICS, SUBJECTS } from './curriculum.js'
 
@@ -38,7 +38,19 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', 
 
 renderIcons()
 const board = await mountBoard($('#board'))
-const scene = mountScene($('#scene3d'))
+
+// ---------- 3D stage: built on first use, not at start-up ----------
+let scene = null
+let dark = false
+let loadingScene = null
+function getScene() {
+  loadingScene ??= import('./scene3d.js').then((m) => {
+    scene = m.mountScene($('#scene3d'))
+    scene.setTheme(dark) // the stage is built after the theme was chosen, so apply it now
+    return scene
+  })
+  return loadingScene
+}
 
 // ---------- Theme (Dark / Light) Switcher ----------
 let currentTheme = store.get('chanakya-theme', null)
@@ -56,8 +68,9 @@ function applyTheme(theme) {
     themeBtn.innerHTML = theme === 'dark' ? ic('sun') : ic('moon')
     renderIcons()
   }
-  board.setTheme(theme === 'dark')
-  scene.setTheme(theme === 'dark')
+  dark = theme === 'dark'
+  board.setTheme(dark)
+  scene?.setTheme(dark)
 }
 
 applyTheme(currentTheme)
@@ -69,6 +82,9 @@ $('#theme-toggle')?.addEventListener('click', () => {
 const history = [] // [{role, content}] sent back to the model for follow-ups
 let current = null // AbortController for the lesson in progress
 let currentTopic = ''
+const page = [] // steps drawn on the current page, so a 2D/3D switch can re-create them
+let lastQuestion = ''
+let userMode = null // mode the learner picked by hand; overrides the tutor's meta.mode
 let lastKind = '' // to group consecutive tutor bubbles under one avatar
 
 // Render text with inline $...$ / $$...$$ LaTeX.
@@ -183,10 +199,13 @@ function hideCaption() {
 // ---------- view: 2D whiteboard or 3D stage ----------
 
 let view = store.get('chanakya.view', '2d')
-function setView(mode) {
+async function setView(mode, byUser = false) {
+  const prev = view
   view = mode === '3d' ? '3d' : '2d'
+  if (byUser) userMode = view
   store.set('chanakya.view', view)
-  scene.setVisible(view === '3d')
+  const s = view === '3d' ? await getScene() : scene
+  s?.setVisible(view === '3d') // must come first: it un-hides and re-sizes the 3D canvas
   const b = $('#view-toggle')
   if (b) {
     b.innerHTML = view === '3d' ? `${ic('presentation')}<span>2D</span>` : `${ic('box')}<span>3D</span>`
@@ -197,6 +216,10 @@ function setView(mode) {
   })
   $('#spin').classList.toggle('hidden', view !== '3d')
   renderIcons()
+  if (prev !== view) {
+    await replayPage() // carry the page over to the surface we just switched to
+    if (byUser) continueInView()
+  }
 }
 function renderSpin(on) { $('#spin').setAttribute('aria-pressed', String(on)) }
 
@@ -220,6 +243,56 @@ function triggerVisualIntro(titleText) {
 function notesFrom(draw) {
   return (draw ?? []).filter((d) => d.kind === 'math' || d.kind === 'text')
     .map((d) => ({ kind: 'note', latex: d.latex, text: d.text, color: d.color, size: d.size }))
+}
+
+// 3D-only items that have a plain 2D equivalent: formula notes and labels become board shapes.
+function boardFrom3d(items) {
+  const out = []
+  let row = 0
+  for (const s of items ?? []) {
+    // only what we actually place takes a row, so 3D geometry leaves no gap in the formula column
+    const place = (shape) => out.push({ ...shape, x: shape.x ?? 560, y: 100 + row++ * 70 })
+    if (s.kind === 'note' && (s.latex || s.text)) {
+      place(s.latex
+        ? { kind: 'math', latex: s.latex, color: s.color, size: s.size }
+        : { kind: 'text', text: s.text, color: s.color, size: s.size })
+    } else if (s.kind === 'label' && (s.latex || s.text || s.label)) {
+      place(s.latex
+        ? { kind: 'math', latex: s.latex, color: s.color }
+        : { kind: 'text', x: 60, text: s.text ?? s.label, color: s.color, size: 's' })
+    }
+  }
+  return out
+}
+
+// Re-create the current page on the surface the learner just switched to: instantly, and silently.
+// A budget of 0 makes board.render / scene.render draw everything finished, with no animation.
+async function replayPage() {
+  if (!page.length) return
+  const { signal } = new AbortController()
+  if (view === '3d') {
+    scene?.clear()
+    for (const ev of page) await scene?.render([...notesFrom(ev.draw), ...(ev.draw3d ?? [])], 0, signal)
+    await scene?.frame(0)
+  } else {
+    board.clear()
+    for (const ev of page) await board.render([...(ev.draw ?? []), ...boardFrom3d(ev.draw3d)], 0, signal)
+    board.fit(false)
+    scene?.clear() // free the 3D page's GPU resources; it is rebuilt from `page` when we switch back
+  }
+}
+
+// The tutor writes 2D and 3D in different vocabularies, so after a switch it keeps producing the old
+// one. A lesson still in flight therefore has to be re-requested in the new mode, picking up where it
+// left off; when nothing is playing, the replay above is enough.
+function continueInView() {
+  if (!current) return // nothing is playing: replaying the page is enough
+  const surface = view === '3d' ? '3D scene' : '2D whiteboard'
+  const said = page.map((e) => e.say).filter(Boolean).join(' ').slice(0, 600)
+  ask(said
+    ? `We were on "${currentTopic || lastQuestion}". So far you have explained: ${said}\n`
+      + `Continue from exactly there, on the ${surface}, without repeating what you already said.`
+    : `${lastQuestion}\nAnswer that on the ${surface}.`, view)
 }
 
 // ---------- settings: model + depth + voice ----------
@@ -273,10 +346,13 @@ function stop() {
   setLessonActive(false)
 }
 
-async function ask(question) {
+async function ask(question, preferredMode) {
   question = question.trim()
   if (!question) return
+  lastQuestion = question
   stop()
+  // a fresh question lets the tutor choose the mode again; a continuation keeps the one we asked for
+  userMode = preferredMode ? (preferredMode === '3d' ? '3d' : '2d') : null
   const ctrl = new AbortController()
   current = ctrl
   const { signal } = ctrl
@@ -357,8 +433,8 @@ async function play(ev, audio, signal) {
   switch (ev.type) {
     case 'meta':
       // a lesson can turn the page several times, switching between 2D and 3D
-      if (ev.clear) { board.clear(); scene.clear(); renderSpin(false) }
-      setView(ev.mode)
+      if (ev.clear) { board.clear(); scene?.clear(); renderSpin(false); page.length = 0 }
+      await setView(userMode ?? ev.mode) // once the learner has chosen a mode, page turns keep it
       if (ev.topic && ev.topic !== currentTopic) addDivider(ev.topic)
       currentTopic = ev.topic || currentTopic
       return
@@ -366,6 +442,7 @@ async function play(ev, audio, signal) {
     case 'step': {
       const url = await audio
       if (signal.aborted) return
+      page.push(ev)
       setThinking('')
       const el = addTutor(ev.say)
       el.classList.add('speaking')
@@ -375,10 +452,10 @@ async function play(ev, audio, signal) {
       const draw2d = view === '3d' ? (ev.draw ?? []).filter((d) => d.kind !== 'math' && d.kind !== 'text') : ev.draw
       await Promise.all([
         board.render(draw2d, durationMs, signal),
-        scene.render(draw3d, durationMs, signal, ev.camera),
+        scene?.render(draw3d, durationMs, signal, ev.camera),
         done,
       ])
-      renderSpin(scene.controls.autoRotate)
+      renderSpin(scene?.controls.autoRotate ?? false)
       el.classList.remove('speaking')
       hideCaption()
       return
@@ -512,10 +589,10 @@ $('#ask-form').addEventListener('submit', (e) => {
 })
 document.querySelectorAll('.chip').forEach((c) => c.addEventListener('click', () => ask(c.dataset.q)))
 $('#stop').addEventListener('click', stop)
-$('#clear').addEventListener('click', () => { board.clear(); scene.clear(); renderSpin(false) })
-$('#fit').addEventListener('click', () => (view === '3d' ? scene.frame() : board.fit()))
-$('#view-toggle').addEventListener('click', () => setView(view === '3d' ? '2d' : '3d'))
-$('#spin').addEventListener('click', () => renderSpin(scene.spin()))
+$('#clear').addEventListener('click', () => { board.clear(); scene?.clear(); renderSpin(false); page.length = 0 })
+$('#fit').addEventListener('click', () => (view === '3d' ? scene?.frame() : board.fit()))
+$('#view-toggle').addEventListener('click', () => setView(view === '3d' ? '2d' : '3d', true))
+$('#spin').addEventListener('click', () => renderSpin(scene?.spin() ?? false))
 
 // ---------- live voice input ----------
 
@@ -918,13 +995,16 @@ searchClr?.addEventListener('click', () => {
 
 document.querySelectorAll('#mode-switch button').forEach((btn) => {
   btn.addEventListener('click', () => {
-    setView(btn.dataset.mode)
+    setView(btn.dataset.mode, true)
   })
 })
 
 // Initial topic count badge setup
 const floatingBadge = $('#floating-badge-count')
 if (floatingBadge) floatingBadge.textContent = TOPICS.length
+
+setView(view) // apply the saved mode: without this a reload in 3D kept the 3D stage hidden
+  .catch((err) => console.warn('[chanakya] could not start the 3D view', err))
 
 // ---------- profile drawer & memory ----------
 
@@ -991,4 +1071,11 @@ refreshMemory()
 
 // Debug handle for the browser console, e.g. chanakya.play({type:'step', say:'hi', draw:[...]})
 // 3D: chanakya.play({type:'meta', mode:'3d', clear:true}) then chanakya.play({type:'step', say:'hi', draw3d:[{kind:'sphere', center:[0,0,1], r:1}]})
-window.chanakya = { board, scene, setView, ask, stop, play: (ev) => play(ev, Promise.resolve(null), new AbortController().signal) }
+window.chanakya = {
+  board,
+  get scene() { return scene },
+  setView,
+  ask,
+  stop,
+  play: (ev) => play(ev, Promise.resolve(null), new AbortController().signal),
+}

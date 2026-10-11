@@ -554,6 +554,11 @@ const sleep = (ms, signal) => new Promise((resolve) => {
 
 function animate(ms, signal, onFrame) {
   return new Promise((resolve) => {
+    // 0 (or a bad value) means "no animation": land on the finished frame at once, with no rAF wait
+    if (!(ms > 0)) {
+      try { onFrame(1) } catch (err) { console.warn('[board] animation frame failed', err) }
+      return resolve()
+    }
     const start = performance.now()
     const tick = (now) => {
       // rAF timestamps can predate `start`, so clamp to [0, 1]
@@ -614,7 +619,8 @@ export class Board {
   // Draw a list of shapes over roughly `durationMs` (the length of the spoken sentence).
   async render(shapes, durationMs, signal) {
     if (!shapes?.length) return
-    const budget = Math.max(250, (durationMs * 0.85) / shapes.length)
+    // durationMs 0 = draw everything finished, with no animation (used to re-create a page after a switch)
+    const budget = durationMs > 0 ? Math.max(250, (durationMs * 0.85) / shapes.length) : 0
     for (const s of shapes) {
       if (signal?.aborted) return
       try {

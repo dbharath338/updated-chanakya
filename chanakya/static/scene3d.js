@@ -18,6 +18,9 @@ const easeOutBack = (t) => 1 + 2.2 * (t - 1) ** 3 + 1.2 * (t - 1) ** 2
 const BACKGROUND = '#fbfaf6'
 const DEFAULT_CAMERA = { pos: [7, -9, 6], target: [0, 0, 0] }
 
+// A budget of 0 means "draw it finished, with no animation": used to re-create a page after a mode switch.
+const floor = (budget, n) => (budget > 0 ? Math.max(budget, n) : 0)
+
 function compileFn(expr) {
   try {
     const f = compile(String(expr ?? '0'))
@@ -128,17 +131,39 @@ export class Scene3D {
     this.scene.add(this.root)
     this.resetCamera()
 
+    this.raf = null
+    this.width = 0
+    this.height = 0
     new ResizeObserver(() => this.resize()).observe(el)
+    // while the stage is hidden this measures 0 and keeps the last known size; setVisible() re-measures
     this.resize()
+  }
+
+  // The render loop runs only while the stage is on screen, and never more than once.
+  start() {
+    if (this.raf) return
     const loop = (now) => {
-      requestAnimationFrame(loop)
-      if (!this.visible) return
+      this.raf = requestAnimationFrame(loop)
       this.controls.update()
       this.updateFlows(now)
       this.renderer.render(this.scene, this.camera)
       this.labels.layout(this.scene, this.camera, this.width, this.height, this.avoidRects())
     }
-    requestAnimationFrame(loop)
+    this.raf = requestAnimationFrame(loop)
+  }
+
+  stop() {
+    if (!this.raf) return
+    cancelAnimationFrame(this.raf)
+    this.raf = null
+  }
+
+  // Free the renderer and everything in it. Call when the stage will not be shown again.
+  dispose() {
+    this.stop()
+    this.clear()
+    this.controls.dispose()
+    this.renderer.dispose()
   }
 
   resize() {
@@ -179,7 +204,13 @@ export class Scene3D {
   setVisible(on) {
     this.visible = on
     this.el.classList.toggle('hidden', !on)
-    if (on) this.resize()
+    if (on) {
+      this.resize()
+      this.resumeFlows()
+      this.start()
+    } else {
+      this.stop()
+    }
   }
 
   resetCamera() {
@@ -247,7 +278,7 @@ export class Scene3D {
     if (camera) tasks.push(this.moveCamera(camera, Math.min(2200, durationMs * 0.6), signal))
     if (items?.length) {
       tasks.push((async () => {
-        const budget = Math.max(300, (durationMs * 0.85) / items.length)
+        const budget = durationMs > 0 ? Math.max(300, (durationMs * 0.85) / items.length) : 0
         for (const s of items) {
           if (signal?.aborted) return
           try {
@@ -260,7 +291,7 @@ export class Scene3D {
     }
     await Promise.all(tasks)
     // like the 2D board's keepInView: if the tutor drew off-screen, zoom out (unless it chose the shot)
-    if (!camera && items?.length && !signal?.aborted && !this.fits()) await this.frame(500, signal)
+    if (!camera && items?.length && !signal?.aborted && durationMs > 0 && !this.fits()) await this.frame(500, signal)
   }
 
   // pos/target are math coordinates; p1/t1 (three.js vectors) override them when given.
@@ -523,7 +554,7 @@ export class Scene3D {
         caps.forEach((c) => (c.visible = false))
         await this.add(s, g, (obj, ms, sig) => {
           setFade(obj, 1)
-          return animate(Math.max(ms, 900), sig, (k) => {
+          return animate(floor(ms, 900), sig, (k) => {
             geo.setDrawRange(0, Math.ceil((total * k) / (radial * 6)) * radial * 6)
           })
         }, budget, signal)
@@ -583,7 +614,7 @@ export class Scene3D {
         if (s.wireframe !== false) g.add(this.wire(geo, s.colormap ? 'black' : s.color ?? 'blue', 0.18))
         geo.computeBoundingBox()
         g.userData.labelAt = geo.boundingBox.max.clone()
-        await this.add(s, g, (obj, ms, sig) => animate(Math.max(ms, 900), sig, (t) => {
+        await this.add(s, g, (obj, ms, sig) => animate(floor(ms, 900), sig, (t) => {
           obj.scale.set(1, Math.max(0.001, easeOut(t)), 1) // rises out of the floor
           setFade(obj, Math.min(1, t * 2))
         }), budget, signal)
@@ -668,10 +699,10 @@ export class Scene3D {
           if (pts.length < 2) return
           const path = new THREE.CatmullRomCurve3(pts, !!s.closed)
           const loops = clampN(s.loops, 1, 1, 5)
-          await animate(Math.max(budget, 1500), signal, (t) => obj.position.copy(path.getPointAt((t * loops) % 1 || (t ? 1 : 0))))
+          await animate(floor(budget, 1500), signal, (t) => obj.position.copy(path.getPointAt((t * loops) % 1 || (t ? 1 : 0))))
         } else {
           const to = v(s.to, [from.x, -from.z, from.y])
-          await animate(Math.max(budget, 600), signal, (t) => obj.position.lerpVectors(from, to, easeOut(t)))
+          await animate(floor(budget, 600), signal, (t) => obj.position.lerpVectors(from, to, easeOut(t)))
         }
         return
       }
@@ -683,7 +714,7 @@ export class Scene3D {
         const angle = THREE.MathUtils.degToRad(num(s.angle, 90))
         const q0 = obj.quaternion.clone()
         const q = new THREE.Quaternion()
-        await animate(Math.max(budget, 800), signal, (t) => {
+        await animate(floor(budget, 800), signal, (t) => {
           q.setFromAxisAngle(axis, angle * easeOut(t))
           obj.quaternion.copy(q).multiply(q0)
         })
@@ -697,7 +728,7 @@ export class Scene3D {
         const times = clampN(s.times, 4, 1, 20), amp = THREE.MathUtils.degToRad(clampN(s.angle, 35, 5, 80))
         const base = model.hinges.map((h) => h.obj.quaternion.clone())
         const q = new THREE.Quaternion()
-        await animate(Math.max(budget, times * 450), signal, (t) => model.hinges.forEach((h, i) => {
+        await animate(floor(budget, times * 450), signal, (t) => model.hinges.forEach((h, i) => {
           q.setFromAxisAngle(h.axis, h.sign * amp * Math.sin(Math.PI * 2 * times * t))
           h.obj.quaternion.copy(base[i]).premultiply(q)
         }))
@@ -711,7 +742,7 @@ export class Scene3D {
         if (!obj) return
         const times = clampN(s.times, 3, 1, 12), amp = clampN(s.amount, 0.07, 0.01, 0.4)
         const s0 = obj.scale.clone()
-        await animate(Math.max(budget, times * 750), signal, (t) => {
+        await animate(floor(budget, times * 750), signal, (t) => {
           const beat = (t * times) % 1
           obj.scale.copy(s0).multiplyScalar(1 + amp * Math.sin(Math.PI * Math.min(1, beat * 2.2)) ** 2)
         })
@@ -815,7 +846,7 @@ export class Scene3D {
       const ws = r.anchor.getWorldScale(new THREE.Vector3()).x || 1
       const glow = new THREE.Mesh(new THREE.SphereGeometry(0.16 / ws, 24, 16), new THREE.MeshBasicMaterial({ color: target, transparent: true, opacity: 0, depthWrite: false }))
       r.anchor.add(glow)
-      await animate(Math.max(budget, 900), signal, (t) => {
+      await animate(floor(budget, 900), signal, (t) => {
         glow.material.opacity = 0.25 + 0.45 * Math.sin(Math.PI * ((t * 2) % 1))
         glow.scale.setScalar(1 + 0.4 * Math.sin(Math.PI * t))
       })
@@ -823,7 +854,7 @@ export class Scene3D {
       return
     }
     const start = mats.map((m) => m.emissive.clone())
-    await animate(Math.max(budget, 900), signal, (t) => {
+    await animate(floor(budget, 900), signal, (t) => {
       const k = 0.55 * Math.sin(Math.PI * ((t * 2) % 1)) + 0.25 * t
       mats.forEach((m, i) => m.emissive.copy(start[i]).lerp(target, Math.min(1, k)))
     })
@@ -861,6 +892,12 @@ export class Scene3D {
     const f = { group: g, curve, n, period: clampN(s.seconds, 4, 0.5, 30) * 1000, start: performance.now() }
     this.flows.push(f)
     if (s.id) this.register(String(s.id), g)
+  }
+
+  // Particles are placed from wall-clock time, so after a pause they would jump: start them again.
+  resumeFlows() {
+    const now = performance.now()
+    for (const f of this.flows) f.start = now
   }
 
   updateFlows(now) {
