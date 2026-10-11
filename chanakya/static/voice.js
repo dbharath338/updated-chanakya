@@ -1,10 +1,23 @@
-// Voice: Deepgram TTS/STT through the local server, with browser speech as a fallback.
+// Voice: the browser's own speech by default, Deepgram when a key is configured.
+//
+// Nothing here is required for a lesson to work. Without DEEPGRAM_API_KEY the
+// tutor speaks with speechSynthesis and the microphone uses the browser's
+// SpeechRecognition - both free, both local to the browser, neither rate limited.
+// The server tells us which engine is available through /api/health.
 
-let deepgramOk = true
+let voiceMode = 'browser' // 'browser' | 'deepgram', set from /api/health
+let deepgramOk = true // flips off on the first 503, so we stop asking
+
+export function setVoiceMode(mode) {
+  voiceMode = mode === 'deepgram' ? 'deepgram' : 'browser'
+  if (voiceMode === 'browser') deepgramOk = false
+}
+
+export const usingDeepgram = () => voiceMode === 'deepgram' && deepgramOk
 
 // Fetch speech audio for a sentence. Resolves to an object URL, or null to use the browser voice.
 export async function synthesize(text, signal) {
-  if (!text?.trim() || !deepgramOk) return null
+  if (!text?.trim() || !usingDeepgram()) return null
   try {
     const r = await fetch('/api/tts', {
       method: 'POST',
@@ -51,7 +64,7 @@ export async function speak(text, audioUrl, { enabled = true, signal } = {}) {
     return { durationMs, done }
   }
 
-  // Browser fallback
+  // Browser voice
   if (!('speechSynthesis' in window)) return { durationMs: estimateMs(text), done: Promise.resolve() }
   const u = new SpeechSynthesisUtterance(text)
   u.rate = 1.05
@@ -78,23 +91,47 @@ export function stopSpeaking() {
 
 // ---------- live transcription ----------
 
-// Streams the mic to /api/listen and reports words as they are recognised.
+const Recognition = typeof window !== 'undefined'
+  ? (window.SpeechRecognition || window.webkitSpeechRecognition)
+  : null
+
+// Reports words as they are recognised. Uses Deepgram's streaming API through
+// /api/listen when a key is configured, and the browser's own recognition otherwise.
 // onText(text, isFinal) fires with the full running transcript (finalised words + current guess);
 // onUtteranceEnd(text) fires after ~1.5 s of silence; onLevel(0..1) drives the input meter.
 export class LiveMic {
   constructor({ onText, onUtteranceEnd, onLevel, onError } = {}) {
     this.cb = { onText, onUtteranceEnd, onLevel, onError }
     this.active = false
+    this.engine = null
   }
 
   get text() {
-    return [...this.finals, this.interim].filter(Boolean).join(' ').trim()
+    return [...(this.finals ?? []), this.interim].filter(Boolean).join(' ').trim()
   }
 
   async start() {
     if (this.active) return
     this.finals = []
     this.interim = ''
+    this.handoff = false
+    if (usingDeepgram()) {
+      try {
+        await this.startDeepgram()
+        return
+      } catch (err) {
+        // The proxy hands us back to the browser when no key is configured.
+        if (!this.handoff) throw err
+        this.engine = null
+      }
+    }
+    await this.startBrowser()
+  }
+
+  // ---------- Deepgram (streaming, through the local proxy) ----------
+
+  async startDeepgram() {
+    this.engine = 'deepgram'
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     })
@@ -103,10 +140,17 @@ export class LiveMic {
     this.ws = new WebSocket(`${proto}://${location.host}/api/listen`)
     this.closed = new Promise((res) => this.ws.addEventListener('close', res, { once: true }))
     this.ws.onmessage = (e) => this.handle(JSON.parse(e.data))
-    await new Promise((res, rej) => {
-      this.ws.addEventListener('open', res, { once: true })
-      this.ws.addEventListener('error', () => rej(new Error('Could not reach the transcription service')), { once: true })
-    })
+    // The server answers immediately with either a Deepgram stream or "use the
+    // browser instead", so wait for one of those before touching the recorder.
+    const handedOff = new Promise((res) => { this.resolveHandoff = res })
+    await Promise.race([
+      new Promise((res, rej) => {
+        this.ws.addEventListener('open', res, { once: true })
+        this.ws.addEventListener('error', () => rej(new Error('Could not reach the transcription service')), { once: true })
+      }),
+      handedOff,
+    ])
+    if (this.handoff) throw new Error('handoff-to-browser')
 
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : ''
     this.media = new MediaRecorder(this.stream, mimeType ? { mimeType } : undefined)
@@ -114,7 +158,7 @@ export class LiveMic {
       if (e.data.size && this.ws?.readyState === WebSocket.OPEN) this.ws.send(e.data)
     }
     this.media.start(250) // small chunks = low latency
-    this.startMeter()
+    this.startMeter(this.stream)
     this.active = true
   }
 
@@ -129,47 +173,129 @@ export class LiveMic {
       this.cb.onText?.(this.text, msg.final)
     } else if (msg.type === 'utterance_end') {
       if (this.text) this.cb.onUtteranceEnd?.(this.text)
+    } else if (msg.type === 'use_browser') {
+      // Server has no Deepgram key: hand over to the browser's own recognition.
+      this.handoff = true
+      deepgramOk = false
+      voiceMode = 'browser'
+      this.resolveHandoff?.()
+      this.teardown()
     } else if (msg.type === 'error') {
       this.cb.onError?.(new Error(msg.message))
     }
   }
 
+  // ---------- browser speech recognition (no API, no key) ----------
+
+  async startBrowser() {
+    if (!Recognition) {
+      throw new Error('This browser has no speech recognition. Type your question instead, or use Chrome or Edge.')
+    }
+    this.engine = 'browser'
+    // Permission first, so the meter and the recogniser share one prompt.
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+
+    this.rec = new Recognition()
+    this.rec.continuous = true
+    this.rec.interimResults = true
+    this.rec.lang = navigator.language || 'en-US'
+
+    this.rec.onresult = (e) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const chunk = e.results[i][0].transcript.trim()
+        if (!chunk) continue
+        if (e.results[i].isFinal) {
+          this.finals.push(chunk)
+          this.interim = ''
+          this.armPause()
+        } else {
+          this.interim = chunk
+        }
+      }
+      this.cb.onText?.(this.text, true)
+    }
+    this.rec.onerror = (e) => {
+      if (e.error === 'no-speech' || e.error === 'aborted') return
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        this.cb.onError?.(new Error('Microphone access was blocked. Allow it in your browser to talk.'))
+      } else if (e.error === 'network') {
+        this.cb.onError?.(new Error("Browser speech recognition needs a network connection. Type your question instead."))
+      }
+      this.active = false
+    }
+    // Chrome stops on its own after a pause: finish the utterance rather than hang.
+    this.rec.onend = () => {
+      if (!this.active) return
+      if (this.text) this.finishUtterance()
+      else { try { this.rec.start() } catch { this.active = false } }
+    }
+
+    this.rec.start()
+    this.startMeter(this.stream)
+    this.active = true
+  }
+
+  // Pause-to-send, matching the Deepgram utterance_end behaviour (~1.5 s of silence).
+  armPause() {
+    clearTimeout(this.pauseTimer)
+    this.pauseTimer = setTimeout(() => this.finishUtterance(), 1500)
+  }
+
+  finishUtterance() {
+    clearTimeout(this.pauseTimer)
+    if (!this.active) return
+    const text = this.text
+    this.active = false
+    this.teardown()
+    if (text) this.cb.onUtteranceEnd?.(text)
+  }
+
   // Stop listening, wait for the last words to be finalised, and return the transcript.
   async stop() {
     if (!this.active) return this.text
+    clearTimeout(this.pauseTimer)
+    const engine = this.engine
     this.active = false
-    if (this.media?.state !== 'inactive') {
-      await new Promise((res) => { this.media.onstop = res; this.media.stop() })
+    if (engine === 'deepgram') {
+      if (this.media?.state !== 'inactive') {
+        await new Promise((res) => { this.media.onstop = res; this.media.stop() })
+      }
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: 'CloseStream' }))
+        await Promise.race([this.closed, new Promise((res) => setTimeout(res, 2500))])
+      }
+    } else {
+      // Give the recogniser a moment to flush its last interim words.
+      await new Promise((res) => setTimeout(res, 250))
     }
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'CloseStream' }))
-      await Promise.race([this.closed, new Promise((res) => setTimeout(res, 2500))])
-    }
-    this.cleanup()
+    this.teardown()
     return this.text
   }
 
   // Abandon without waiting for a transcript.
   cancel() {
     if (!this.active) return
+    clearTimeout(this.pauseTimer)
     this.active = false
-    if (this.media?.state !== 'inactive') this.media.stop()
-    this.cleanup()
+    this.teardown()
   }
 
-  cleanup() {
+  teardown() {
     cancelAnimationFrame(this.raf)
+    if (this.media?.state !== 'inactive') { try { this.media.stop() } catch {} }
+    if (this.rec) { try { this.rec.onend = null; this.rec.abort() } catch {} this.rec = null }
     this.audioCtx?.close().catch(() => {})
     this.stream?.getTracks().forEach((t) => t.stop())
+    this.stream = null
     if (this.ws && this.ws.readyState <= WebSocket.OPEN) this.ws.close()
     this.cb.onLevel?.(0)
   }
 
-  startMeter() {
+  startMeter(stream) {
     this.audioCtx = new AudioContext()
     const analyser = this.audioCtx.createAnalyser()
     analyser.fftSize = 512
-    this.audioCtx.createMediaStreamSource(this.stream).connect(analyser)
+    this.audioCtx.createMediaStreamSource(stream).connect(analyser)
     const data = new Uint8Array(analyser.fftSize)
     const tick = () => {
       analyser.getByteTimeDomainData(data)

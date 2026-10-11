@@ -5,6 +5,7 @@ Most improvements come down to two moves: **give the renderer a new capability**
 - [Add a 3D model](#add-a-3d-model)
 - [Add a 3D object or action kind](#add-a-3d-object-or-action-kind)
 - [Add a 2D shape](#add-a-2d-shape)
+- [Add an offline lesson](#add-an-offline-lesson)
 - [Add or change a depth level](#add-or-change-a-depth-level)
 - [Tuning the tutor's behaviour](#tuning-the-tutors-behaviour)
 - [Development tips](#development-tips)
@@ -98,6 +99,56 @@ Restart the server (`prompts.py` is read at start-up) and ask about the subject.
 ## Add a 2D shape
 
 Add a `case` to `Board.drawShape()` in `static/board.js` (tldraw shapes, or a custom `ShapeUtil` like `MathShapeUtil`), then document it in the "2D whiteboard" section of `prompts.py`.
+
+## Add an offline lesson
+
+The built-in library (`lessons/`) is what answers when the model cannot - no key, no quota, no network.
+It has one lesson per curriculum topic, written in the same protocol the model emits, so anything you
+add there works with the existing playback pipeline, quizzes, follow-ups and memory.
+
+### 1. Add an entry to `lessons/maths.py`, `lessons/physics.py` or `lessons/chemistry.py`
+
+```python
+{
+    "id": "chem-atomic-orbitals",     # must match the topic id in static/curriculum.js
+    "topic": "Atomic orbitals",       # shown as the transcript divider
+    "mode": "3d",                     # "2d" (whiteboard) or "3d" (stage)
+    "keywords": ["orbital", "s orbital", "electron cloud", "shell"],  # how questions find it
+    "steps": [
+        {"say": "An s orbital is a sphere.",                      # 1-3 plain spoken sentences
+         "draw3d": [{"kind": "sphere", "center": [0, 0, 1.6], "r": 1.0, "color": "light-blue",
+                    "opacity": 0.4, "id": "s"}]},
+        {"say": "A p orbital has two lobes.",
+         "draw3d": [{"kind": "remove", "id": "s"}, ...],          # ids must be registered earlier
+         "camera": {"pos": [4.5, -5, 3], "target": [0, 0, 1.6]}},
+        {"say": "...", "draw": [...], "deep": True,               # deep-dive only
+         "page": {"topic": "The d orbitals", "mode": "3d", "clear": True}},  # turn the page first
+    ],
+    "checks": [{"question": "An s orbital is shaped like", "options": ["A dumbbell", "A sphere"],
+                "answer": 1, "explain": "It is spherically symmetric."}],   # a 2nd one is used in Deep dive
+    "suggest": ["Why does 4s fill before 3d?"],
+},
+```
+
+Rules that matter (all of them are enforced by the validator):
+
+- `say` is plain spoken words, at most 600 characters - maths goes in `draw`, not in speech.
+- `id` on any object you later address with `move`, `rotate`, `highlight`, `opacity`, `pulse`, `flap` or `remove`.
+- Model parts and flow routes (`pend.bob`, `water.dipole-moment`) must exist in `static/models3d.js`.
+- Inline maths in `question`/`options`/`explain` uses `$...$`; write LaTeX with a doubled backslash (`"\\frac{1}{2}"`).
+- `"deep": True` marks a step for Deep dive only; `"page"` emits a `meta` before that step.
+- Basic takes the first four steps, Standard all of them, Deep dive all of them plus a second check.
+
+### 2. Validate
+
+```bash
+python -m lessons.validate
+```
+
+This checks every lesson against what `board.js` and `scene3d.js` actually render - unknown kinds,
+missing fields, ids that were never drawn, model parts that do not exist, unbalanced LaTeX - and also
+asserts that every curriculum prompt in `static/curriculum.js` and every starter chip in `index.html`
+still resolves to its own lesson. Add the new topic to `static/curriculum.js` too if it is not there yet.
 
 ## Add or change a depth level
 

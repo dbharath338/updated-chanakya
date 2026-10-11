@@ -17,8 +17,11 @@ fi
 if [ ! -f ".env" ]; then
   cp .env.example .env
   echo
-  echo "Created .env - add your GROQ_API_KEY and DEEPGRAM_API_KEY to it, then run ./start.sh again."
-  exit 0
+  echo "Created .env. Both API keys are optional: without them Chanakya teaches its"
+  echo "42 built-in topics offline and speaks with your browser's own voice."
+  echo "Add GROQ_API_KEY (AI tutor) and/or DEEPGRAM_API_KEY (natural voice) any time,"
+  echo "then restart. Continuing..."
+  echo
 fi
 
 PORT=$(grep -E '^PORT=' .env | cut -d= -f2)

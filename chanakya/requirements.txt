@@ -1,6 +1,13 @@
+# Core: the local server and the web app.
 fastapi>=0.115
 uvicorn[standard]>=0.32
-groq>=0.13
-httpx>=0.27
 python-dotenv>=1.0
+httpx>=0.27
+
+# Optional AI tutor (GROQ_API_KEY). Without these, or with AI_MODE=offline,
+# lessons come from the built-in library in lessons/ and no API is ever called.
+groq>=0.13
+
+# Optional Deepgram microphone proxy (DEEPGRAM_API_KEY). Without it, the browser's
+# own speech recognition is used instead.
 websockets>=13.0

@@ -1,28 +1,57 @@
 # Troubleshooting
 
-### A banner says "Add GROQ_API_KEY / DEEPGRAM_API_KEY to .env"
+### An amber note says "Groq's tokens per day limit is used up ... playing the built-in offline lesson instead"
 
-The server didn't find the keys. Check that:
-- the file is named exactly `.env` (not `.env.txt`), in the project root next to `server.py`;
-- the lines look like `GROQ_API_KEY=gsk_...` with no quotes or spaces around `=`;
-- you **restarted** the server after editing.
+That is the fallback working, not a failure. Your Groq quota for that model is exhausted, so the app
+switched model, and then served the lesson from the built-in library - which needs no API at all.
+You still get the talk-while-drawing lesson, the quiz and the follow-ups.
 
-`GET http://localhost:8000/api/health` shows which keys were loaded.
+- The note tells you roughly when the quota resets. There is no need to wait: keep asking.
+- **Fast** (`gpt-oss-20b`) and **Deep** (`gpt-oss-120b`) have separate quotas, and both are tried
+  automatically before the offline library is used.
+- To stop calling Groq entirely, set `AI_MODE=offline` in `.env` and restart. Every lesson then comes
+  from the library: zero API calls, zero rate limits, zero cost. Set it back to `auto` any time.
 
-### "No lesson came back" or an error bubble mentioning Groq
+### A banner explains which engines are in use
 
-- An invalid key gives an authentication error. Create a new key at https://console.groq.com/keys.
-- Rate limits or quota: wait a minute, switch to **Fast**, or use a lower depth.
-- A lesson that stops halfway in Deep dive usually means the token budget ran out. Raise `max_tokens` for `deep` in `DEPTH_SETTINGS` (`server.py`).
+Both API keys are optional. The banner is informational:
 
-### The tutor's voice sounds robotic, or the mic button is greyed out
+| Banner | Meaning |
+|---|---|
+| "No `GROQ_API_KEY` ... lessons come from the built-in library" | No key, so the offline library teaches all 42 curriculum topics |
+| "The AI is switched off (`AI_MODE=offline`)" | You asked for no API calls; set `AI_MODE=auto` to use the model again |
+| "Using your browser's built-in voice" | No Deepgram key, so speech and the mic use the browser's own engines |
 
-Without `DEEPGRAM_API_KEY` the app uses the browser's built-in voice and disables the microphone. Add the key and restart.
+To add a key later: the file must be named exactly `.env` (not `.env.txt`), sit next to `server.py`,
+use `GROQ_API_KEY=gsk_...` with no quotes or spaces around `=`, and the server must be **restarted**.
+`GET http://localhost:8000/api/health` shows what was loaded.
+
+### "No lesson came back"
+
+This should no longer happen - the offline library answers when the model cannot. If you do see it:
+
+- the question was interrupted (the **Stop** button, or you started talking);
+- the browser could not reach the local server at all. Check the server is running and reload.
+
+Other provider problems are handled automatically:
+
+- An invalid key is reported in the amber note ("the Groq API key was rejected") and the offline lesson plays.
+- A lesson that stops halfway in Deep dive usually means the token budget ran out; the note says so and
+  what was already drawn is kept. Raise `max_tokens` for `deep` in `DEPTH_SETTINGS` (`server.py`) if it recurs.
+
+### The tutor's voice sounds robotic
+
+Without `DEEPGRAM_API_KEY` the app uses your browser's built-in speech synthesis, which varies by
+browser and operating system (Chrome and Edge sound best; each has an "enhanced" voice you can
+download in its settings). The microphone still works - it uses the browser's own speech recognition
+instead of Deepgram. Add the key and restart for the natural voice.
 
 ### The microphone doesn't work
 
 - Allow microphone access when the browser asks (or via the padlock icon in the address bar).
 - Use `http://localhost:8000` exactly. Browsers only allow microphone access on `localhost` or HTTPS.
+- Without Deepgram, the mic uses the browser's `SpeechRecognition`, which Chrome and Edge support and
+  Firefox does not. On Firefox, type the question instead, or add `DEEPGRAM_API_KEY`.
 - Check that the right input device is selected in your operating system's sound settings.
 - For mixed-language speech (such as Hinglish), set `DEEPGRAM_STT_LANGUAGE=multi`.
 
@@ -52,6 +81,7 @@ Subjects without a ready-made model are built by the language model from basic o
 
 ### The first step takes a long time to start
 
+- Offline lessons start instantly; anything slow here is the model being used.
 - Deep dive uses more reasoning. Expect several seconds before the first step.
 - `GROQ_REASONING_EFFORT=medium/high` slows every lesson; `low` is fastest.
 - **Fast** (`gpt-oss-20b`) starts quicker than **Deep** (`gpt-oss-120b`).
